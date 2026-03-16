@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo-light.png" alt="MemX logo" width="420" />
+<img src="assets/logo-light.png" alt="MemX logo" width="220" />
 
 # MemX
 
