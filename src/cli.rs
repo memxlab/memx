@@ -15,6 +15,7 @@ use crate::{
     },
     db::{init_schema, DbPool, MemoryInput, MemoryType},
     embed::EmbedClient,
+    os_service,
     routes::{link_routes, memory_routes, search_routes},
     service::{AppState, MemxService},
 };
@@ -34,6 +35,8 @@ enum Commands {
     Setup(SetupArgs),
     /// Check config and embedding connectivity
     Doctor,
+    /// Manage the background MemX service
+    Service(ServiceArgs),
     /// Remove the installed binary and local MemX data
     Uninstall(UninstallArgs),
     /// Start the HTTP server
@@ -109,6 +112,26 @@ struct UninstallArgs {
     yes: bool,
 }
 
+#[derive(Args, Debug, Clone)]
+struct ServiceArgs {
+    #[command(subcommand)]
+    command: ServiceCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum ServiceCommand {
+    /// Install and start the background service
+    Install,
+    /// Start the background service
+    Start,
+    /// Stop the background service
+    Stop,
+    /// Show service status
+    Status,
+    /// Remove the background service
+    Remove,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 enum ProviderPreset {
     Deepinfra,
@@ -146,6 +169,7 @@ pub async fn run() -> Result<()> {
     match cli.command {
         Commands::Setup(args) => cmd_setup(args).await,
         Commands::Doctor => cmd_doctor().await,
+        Commands::Service(args) => cmd_service(args),
         Commands::Uninstall(args) => cmd_uninstall(args),
         Commands::Serve => cmd_serve().await,
         Commands::Add {
@@ -301,6 +325,44 @@ async fn cmd_doctor() -> Result<()> {
     );
 }
 
+fn cmd_service(args: ServiceArgs) -> Result<()> {
+    let binary_path = env::current_exe().context("Cannot determine current executable path")?;
+    let memx_home = Config::memx_dir_path()?;
+
+    match args.command {
+        ServiceCommand::Install => {
+            ensure_service_binary_path(&binary_path)?;
+            os_service::install(&binary_path, &memx_home)?;
+            println!(
+                "MemX background service installed and started with {}.",
+                os_service::service_manager_name()
+            );
+        }
+        ServiceCommand::Start => {
+            os_service::start()?;
+            println!("MemX background service started.");
+        }
+        ServiceCommand::Stop => {
+            os_service::stop()?;
+            println!("MemX background service stopped.");
+        }
+        ServiceCommand::Status => {
+            let status = os_service::status()?;
+            if status.trim().is_empty() {
+                println!("Service status returned no output.");
+            } else {
+                println!("{status}");
+            }
+        }
+        ServiceCommand::Remove => {
+            os_service::remove()?;
+            println!("MemX background service removed.");
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     let memx_dir = Config::memx_dir_path()?;
     let binary_path = env::current_exe().context("Cannot determine current executable path")?;
@@ -331,6 +393,11 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     if !args.yes && !prompt_yes_no("Continue uninstall?", false)? {
         println!("Uninstall canceled.");
         return Ok(());
+    }
+
+    let had_service = os_service::remove().is_ok();
+    if had_service {
+        println!("Removed background service configuration.");
     }
 
     if memx_dir.exists() {
@@ -917,6 +984,17 @@ fn is_managed_binary_path(path: &Path) -> bool {
         path.file_name().and_then(|value| value.to_str()),
         Some("memx") | Some("memx.exe")
     ) && !looks_like_cargo_target_binary(path)
+}
+
+fn ensure_service_binary_path(binary_path: &Path) -> Result<()> {
+    if looks_like_cargo_target_binary(binary_path) {
+        bail!(
+            "Refusing to install a background service from {}.\nInstall MemX first, then re-run `memx service install` from the installed binary.",
+            binary_path.display()
+        );
+    }
+
+    Ok(())
 }
 
 fn looks_like_cargo_target_binary(path: &Path) -> bool {

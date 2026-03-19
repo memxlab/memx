@@ -63,7 +63,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/memxlab/memx/main/install.ps1 | iex
 ```
 
-The installer downloads the latest GitHub release, installs `memx`, and launches `memx setup`.
+The installer downloads the latest GitHub release, installs `memx`, launches `memx setup`, and then offers to install/start the background service.
 
 One-line uninstall:
 
@@ -177,6 +177,7 @@ memx <COMMAND>
 Commands:
   setup   Interactively create or update the config
   doctor  Check config and embedding connectivity
+  service  Manage the background MemX service
   uninstall  Remove the installed binary and local MemX data
   serve   Start the HTTP server
   add     Add a new memory
@@ -206,6 +207,12 @@ Options:
 
 ```bash
 memx doctor
+```
+
+### `memx service`
+
+```bash
+memx service <install|start|stop|status|remove>
 ```
 
 ### `memx uninstall`

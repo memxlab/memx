@@ -135,6 +135,13 @@ struct SearchFileConfig {
 
 impl Config {
     pub fn memx_dir_path() -> Result<PathBuf> {
+        if let Ok(dir) = env::var("MEMX_HOME") {
+            let dir = dir.trim();
+            if !dir.is_empty() {
+                return Ok(PathBuf::from(dir));
+            }
+        }
+
         let home = dirs::home_dir().context("Cannot determine home directory")?;
         Ok(home.join(".memx"))
     }
@@ -386,7 +393,7 @@ mod tests {
         SearchConfig, SearchFileConfig, ServerFileConfig, DEFAULT_EMBEDDING_BASE_URL,
         DEFAULT_EMBEDDING_DIMENSION, DEFAULT_EMBEDDING_MODEL,
     };
-    use std::path::Path;
+    use std::{path::Path, path::PathBuf};
 
     #[test]
     fn converts_search_config_to_runtime_options() {
@@ -474,5 +481,21 @@ mod tests {
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 7878);
         assert_eq!(config.database.path, "/tmp/memx-config-tests/memory.db");
+    }
+
+    #[test]
+    fn memx_dir_path_prefers_memx_home_env() {
+        let expected = if cfg!(windows) {
+            PathBuf::from(r"C:\MemXData")
+        } else {
+            PathBuf::from("/tmp/memx-home")
+        };
+        std::env::set_var("MEMX_HOME", &expected);
+
+        let resolved = super::Config::memx_dir_path().unwrap();
+
+        std::env::remove_var("MEMX_HOME");
+
+        assert_eq!(resolved, expected);
     }
 }

@@ -82,8 +82,9 @@ function Remove-UserPath {
         return $false
     }
 
-    $entries = $userPath -split ";" | Where-Object { $_ -and $_ -ne $PathEntry }
-    if (($entries.Count -eq ($userPath -split ";" | Where-Object { $_ }).Count) -and (($env:Path -split ";") -notcontains $PathEntry)) {
+    $originalEntries = $userPath -split ";" | Where-Object { $_ }
+    $entries = $originalEntries | Where-Object { $_ -ne $PathEntry }
+    if (($entries.Count -eq $originalEntries.Count) -and (($env:Path -split ";") -notcontains $PathEntry)) {
         return $false
     }
 
@@ -146,6 +147,22 @@ function Find-InstalledBinary {
     return $null
 }
 
+function Remove-BackgroundService {
+    param([string]$BinaryPath)
+
+    if (-not $BinaryPath -or -not (Test-Path $BinaryPath)) {
+        return
+    }
+
+    try {
+        $env:MEMX_HOME = $MemxHome
+        & $BinaryPath service remove | Out-Null
+        Write-Host "Removed MemX background service"
+    }
+    catch {
+    }
+}
+
 function Confirm-Uninstall {
     param(
         [string]$BinaryPath,
@@ -190,6 +207,44 @@ function Confirm-Uninstall {
     }
 }
 
+function Maybe-InstallBackgroundService {
+    param([string]$BinaryPath)
+
+    if ($env:MEMX_INSTALL_SKIP_SERVICE -eq "1" -or $env:MEMX_INSTALL_SKIP_SETUP -eq "1") {
+        return
+    }
+
+    $shouldInstall = $false
+    if ($env:MEMX_INSTALL_START_SERVICE -eq "1") {
+        $shouldInstall = $true
+    }
+    elseif (Test-InteractiveConsole) {
+        $answer = Read-Host "Install and start MemX as a background service now? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($answer)) {
+            $shouldInstall = $true
+        }
+        else {
+            switch ($answer.Trim().ToLowerInvariant()) {
+                "y" { $shouldInstall = $true }
+                "yes" { $shouldInstall = $true }
+            }
+        }
+    }
+    else {
+        Write-Warning "No interactive terminal detected. Run this next to start MemX in the background:"
+        Write-Host "  `$env:MEMX_HOME=""$MemxHome""; & ""$BinaryPath"" service install"
+    }
+
+    if (-not $shouldInstall) {
+        return
+    }
+
+    Write-Host ""
+    Write-Step "Installing and starting the MemX background service"
+    $env:MEMX_HOME = $MemxHome
+    & $BinaryPath service install
+}
+
 function Invoke-Uninstall {
     param([string]$PreferredDir)
 
@@ -204,6 +259,8 @@ function Invoke-Uninstall {
         Write-Host "Uninstall canceled."
         return
     }
+
+    Remove-BackgroundService -BinaryPath $targetPath
 
     if ($targetPath -and (Test-Path $targetPath)) {
         Remove-Item -Path $targetPath -Force
@@ -277,9 +334,11 @@ try {
     & $targetPath --help | Out-Null
 
     $pathUpdated = Add-UserPath -PathEntry $InstallDir
+    $env:MEMX_HOME = $MemxHome
 
     Write-Host ""
     Write-Host "MemX installed successfully." -ForegroundColor Green
+    Write-Host "Data directory: $MemxHome"
     Write-Host "Binary path: $targetPath"
     if ($pathUpdated) {
         Write-Host "Added $InstallDir to your user PATH. New terminals will pick it up."
@@ -294,23 +353,25 @@ try {
         }
         else {
             Write-Warning "No interactive terminal detected. Run this next:"
-            Write-Host "  $targetPath setup"
+            Write-Host "  `$env:MEMX_HOME=""$MemxHome""; & ""$targetPath"" setup"
         }
     }
     else {
         Write-Warning "Skipping memx setup."
     }
 
+    Maybe-InstallBackgroundService -BinaryPath $targetPath
+
     Write-Host ""
     Write-Host "Next steps:"
-    Write-Host "  1. Run setup if you skipped it:"
-    Write-Host "     $targetPath setup"
-    Write-Host "  2. Validate config:"
-    Write-Host "     $targetPath doctor"
-    Write-Host "  3. Uninstall if needed:"
-    Write-Host "     $targetPath uninstall"
-    Write-Host "  4. Start the server:"
-    Write-Host "     $targetPath serve"
+    Write-Host "  1. Validate config:"
+    Write-Host "     `$env:MEMX_HOME=""$MemxHome""; & ""$targetPath"" doctor"
+    Write-Host "  2. Check service status:"
+    Write-Host "     `$env:MEMX_HOME=""$MemxHome""; & ""$targetPath"" service status"
+    Write-Host "  3. Remove the background service:"
+    Write-Host "     `$env:MEMX_HOME=""$MemxHome""; & ""$targetPath"" service remove"
+    Write-Host "  4. Uninstall MemX and delete local data:"
+    Write-Host "     `$env:MEMX_HOME=""$MemxHome""; & ""$targetPath"" uninstall"
 }
 finally {
     if (Test-Path $tempDir) {

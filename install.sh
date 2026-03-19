@@ -10,10 +10,12 @@ REPO="${MEMX_REPO:-memxlab/memx}"
 VERSION="${MEMX_VERSION:-latest}"
 DOWNLOAD_BASE_URL="${MEMX_DOWNLOAD_BASE_URL:-}"
 BINARY_NAME="memx"
-MEMX_HOME="${MEMX_HOME:-$HOME/.memx}"
-FALLBACK_INSTALL_DIR="$MEMX_HOME/bin"
+MEMX_HOME="${MEMX_HOME:-}"
 ACTION="${MEMX_ACTION:-install}"
 ASSUME_YES=0
+TARGET_USER=""
+TARGET_HOME=""
+TARGET_GROUP=""
 
 if [ "${MEMX_UNINSTALL:-0}" = "1" ]; then
     ACTION="uninstall"
@@ -46,14 +48,18 @@ Usage:
   install.sh uninstall [--yes]
 
 Environment variables:
-  MEMX_VERSION             Release tag to install (default: latest)
-  MEMX_REPO                GitHub repo in owner/name format
-  MEMX_DOWNLOAD_BASE_URL   Override release asset base URL
-  MEMX_HOME                Override MemX data directory (default: ~/.memx)
-  MEMX_INSTALL_DIR         Override install directory
-  MEMX_INSTALL_SKIP_SETUP  Skip running 'memx setup' after install when set to 1
-  MEMX_UNINSTALL           Set to 1 to run uninstall mode
-  MEMX_YES                 Set to 1 to skip confirmation prompts
+  MEMX_VERSION               Release tag to install (default: latest)
+  MEMX_REPO                  GitHub repo in owner/name format
+  MEMX_DOWNLOAD_BASE_URL     Override release asset base URL
+  MEMX_HOME                  Override MemX data directory
+  MEMX_TARGET_USER           Override the runtime user used for setup/service
+  MEMX_TARGET_HOME           Override the runtime user's home directory
+  MEMX_INSTALL_DIR           Override install directory
+  MEMX_INSTALL_SKIP_SETUP    Skip running 'memx setup' after install when set to 1
+  MEMX_INSTALL_SKIP_SERVICE  Skip prompting to install/start the background service
+  MEMX_INSTALL_START_SERVICE Set to 1 to auto-install/start the background service without prompting
+  MEMX_UNINSTALL             Set to 1 to run uninstall mode
+  MEMX_YES                   Set to 1 to skip confirmation prompts
 EOF
 }
 
@@ -83,6 +89,115 @@ parse_args() {
     done
 }
 
+current_user() {
+    id -un
+}
+
+is_root_user() {
+    [ "$(id -u)" -eq 0 ]
+}
+
+resolve_user_home() {
+    USER_NAME="$1"
+
+    if [ "$USER_NAME" = "$(current_user)" ] && [ -n "$HOME" ]; then
+        printf "%s\n" "$HOME"
+        return 0
+    fi
+
+    HOME_PATH=$(eval "printf '%s' ~$USER_NAME" 2> /dev/null || true)
+    case "$HOME_PATH" in
+        "~$USER_NAME"|~) ;;
+        *)
+            if [ -n "$HOME_PATH" ]; then
+                printf "%s\n" "$HOME_PATH"
+                return 0
+            fi
+            ;;
+    esac
+
+    if command -v getent > /dev/null 2>&1; then
+        HOME_PATH=$(getent passwd "$USER_NAME" | cut -d: -f6)
+        if [ -n "$HOME_PATH" ]; then
+            printf "%s\n" "$HOME_PATH"
+            return 0
+        fi
+    fi
+
+    if command -v dscl > /dev/null 2>&1; then
+        HOME_PATH=$(dscl . -read "/Users/$USER_NAME" NFSHomeDirectory 2> /dev/null | awk '{print $2}')
+        if [ -n "$HOME_PATH" ]; then
+            printf "%s\n" "$HOME_PATH"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+resolve_target_identity() {
+    if [ -n "${MEMX_TARGET_USER:-}" ]; then
+        TARGET_USER="$MEMX_TARGET_USER"
+    elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        TARGET_USER="$SUDO_USER"
+    else
+        TARGET_USER=$(current_user)
+    fi
+
+    if [ -n "${MEMX_TARGET_HOME:-}" ]; then
+        TARGET_HOME="$MEMX_TARGET_HOME"
+    else
+        TARGET_HOME=$(resolve_user_home "$TARGET_USER") || error "Cannot determine home directory for $TARGET_USER"
+    fi
+
+    TARGET_GROUP=$(id -gn "$TARGET_USER" 2> /dev/null || true)
+
+    if [ -z "$MEMX_HOME" ]; then
+        MEMX_HOME="$TARGET_HOME/.memx"
+    fi
+}
+
+run_as_target_user() {
+    if [ "$(current_user)" = "$TARGET_USER" ]; then
+        HOME="$TARGET_HOME" USER="$TARGET_USER" LOGNAME="$TARGET_USER" MEMX_HOME="$MEMX_HOME" "$@"
+        return
+    fi
+
+    if command -v sudo > /dev/null 2>&1; then
+        sudo -H -u "$TARGET_USER" env \
+            HOME="$TARGET_HOME" \
+            USER="$TARGET_USER" \
+            LOGNAME="$TARGET_USER" \
+            MEMX_HOME="$MEMX_HOME" \
+            "$@"
+        return
+    fi
+
+    error "Cannot switch to $TARGET_USER because sudo is not available"
+}
+
+chown_target_path() {
+    TARGET_PATH="$1"
+
+    if ! is_root_user || [ "$TARGET_USER" = "root" ] || [ -z "$TARGET_GROUP" ] || [ ! -e "$TARGET_PATH" ]; then
+        return
+    fi
+
+    chown "$TARGET_USER:$TARGET_GROUP" "$TARGET_PATH" \
+        || error "Failed to set ownership on $TARGET_PATH"
+}
+
+chown_target_tree() {
+    TARGET_PATH="$1"
+
+    if ! is_root_user || [ "$TARGET_USER" = "root" ] || [ -z "$TARGET_GROUP" ] || [ ! -e "$TARGET_PATH" ]; then
+        return
+    fi
+
+    chown -R "$TARGET_USER:$TARGET_GROUP" "$TARGET_PATH" \
+        || error "Failed to set ownership on $TARGET_PATH"
+}
+
 detect_os() {
     case "$(uname -s)" in
         Linux)  echo "linux"  ;;
@@ -96,13 +211,6 @@ detect_arch() {
         x86_64)        echo "x86_64"  ;;
         aarch64|arm64) echo "aarch64" ;;
         *)             error "Unsupported architecture: $(uname -m)" ;;
-    esac
-}
-
-path_contains() {
-    case ":$PATH:" in
-        *:"$1":*) return 0 ;;
-        *)        return 1 ;;
     esac
 }
 
@@ -120,26 +228,37 @@ find_writable_ancestor() {
 }
 
 choose_install_dir() {
-    if [ -n "$MEMX_INSTALL_DIR" ]; then
+    if [ -n "${MEMX_INSTALL_DIR:-}" ]; then
         printf "%s\n" "$MEMX_INSTALL_DIR"
         return
     fi
 
-    for candidate in "$HOME/.local/bin" "$HOME/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
-        if path_contains "$candidate" && find_writable_ancestor "$candidate"; then
+    for candidate in "$TARGET_HOME/.local/bin" "$TARGET_HOME/bin"; do
+        if find_writable_ancestor "$candidate"; then
             printf "%s\n" "$candidate"
             return
         fi
     done
 
-    printf "%s\n" "$FALLBACK_INSTALL_DIR"
+    printf "%s\n" "$MEMX_HOME/bin"
 }
 
 find_installed_binary() {
-    if [ -n "$MEMX_INSTALL_DIR" ] && [ -f "$MEMX_INSTALL_DIR/$BINARY_NAME" ]; then
+    if [ -n "${MEMX_INSTALL_DIR:-}" ] && [ -f "$MEMX_INSTALL_DIR/$BINARY_NAME" ]; then
         printf "%s\n" "$MEMX_INSTALL_DIR/$BINARY_NAME"
         return 0
     fi
+
+    for candidate in \
+        "$TARGET_HOME/.local/bin/$BINARY_NAME" \
+        "$TARGET_HOME/bin/$BINARY_NAME" \
+        "$MEMX_HOME/bin/$BINARY_NAME"
+    do
+        if [ -f "$candidate" ]; then
+            printf "%s\n" "$candidate"
+            return 0
+        fi
+    done
 
     if command -v "$BINARY_NAME" > /dev/null 2>&1; then
         CMD_PATH=$(command -v "$BINARY_NAME")
@@ -153,19 +272,6 @@ find_installed_binary() {
         esac
     fi
 
-    for candidate in \
-        "$HOME/.local/bin/$BINARY_NAME" \
-        "$HOME/bin/$BINARY_NAME" \
-        "$MEMX_HOME/bin/$BINARY_NAME" \
-        "/opt/homebrew/bin/$BINARY_NAME" \
-        "/usr/local/bin/$BINARY_NAME"
-    do
-        if [ -f "$candidate" ]; then
-            printf "%s\n" "$candidate"
-            return 0
-        fi
-    done
-
     return 1
 }
 
@@ -174,7 +280,7 @@ prompt_yes_no_tty() {
     DEFAULT="$2"
 
     if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-        error "No interactive terminal detected. Re-run with --yes to confirm uninstall."
+        error "No interactive terminal detected. Re-run with --yes to continue."
     fi
 
     while :; do
@@ -279,15 +385,18 @@ install_binary() {
     TARGET="$TARGET_DIR/$BINARY_NAME"
 
     mkdir -p "$TARGET_DIR"
+    chown_target_tree "$TARGET_DIR"
     chmod +x "$SOURCE"
 
     if [ -f "$TARGET" ]; then
         warn "Found existing $TARGET — backing up to ${TARGET}.bak"
         cp "$TARGET" "${TARGET}.bak"
+        chown_target_path "${TARGET}.bak"
     fi
 
     cp "$SOURCE" "$TARGET"
     chmod +x "$TARGET"
+    chown_target_path "$TARGET"
 
     printf "%s\n" "$TARGET"
 }
@@ -308,31 +417,54 @@ run_setup() {
 
     printf "\n"
     if [ -t 0 ] && [ -t 1 ]; then
-        step "Launching memx setup"
-        "$TARGET" setup
+        step "Launching memx setup for $TARGET_USER"
+        run_as_target_user "$TARGET" setup
         return
     fi
 
     if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        step "Launching memx setup"
-        "$TARGET" setup < /dev/tty > /dev/tty 2> /dev/tty
+        step "Launching memx setup for $TARGET_USER"
+        run_as_target_user "$TARGET" setup < /dev/tty > /dev/tty 2> /dev/tty
         return
     fi
 
     warn "No interactive terminal detected. Run this next:"
-    printf "  %s setup\n" "$TARGET"
+    printf "  HOME=\"%s\" MEMX_HOME=\"%s\" %s setup\n" "$TARGET_HOME" "$MEMX_HOME" "$TARGET"
+}
+
+run_background_service() {
+    TARGET="$1"
+
+    if [ "${MEMX_INSTALL_SKIP_SETUP:-0}" = "1" ] || [ "${MEMX_INSTALL_SKIP_SERVICE:-0}" = "1" ]; then
+        return
+    fi
+
+    SHOULD_START=0
+    if [ "${MEMX_INSTALL_START_SERVICE:-0}" = "1" ]; then
+        SHOULD_START=1
+    elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        if prompt_yes_no_tty "Install and start MemX as a background service now?" "yes"; then
+            SHOULD_START=1
+        fi
+    else
+        warn "No interactive terminal detected. Run this next to start MemX in the background:"
+        printf "  HOME=\"%s\" MEMX_HOME=\"%s\" %s service install\n" "$TARGET_HOME" "$MEMX_HOME" "$TARGET"
+    fi
+
+    if [ "$SHOULD_START" != "1" ]; then
+        return
+    fi
+
+    step "Installing and starting the MemX background service for $TARGET_USER"
+    run_as_target_user "$TARGET" service install || error "Failed to install/start the background service"
+    success "MemX background service is running"
 }
 
 print_path_hint() {
     INSTALL_DIR="$1"
 
-    if path_contains "$INSTALL_DIR"; then
-        return
-    fi
-
     printf "\n"
-    warn "The install directory is not on your PATH"
-    printf "Add this line to your shell profile:\n"
+    warn "If '$INSTALL_DIR' is not on your PATH, add this line to your shell profile:"
     printf "  export PATH=\"%s:\$PATH\"\n" "$INSTALL_DIR"
 }
 
@@ -345,19 +477,23 @@ print_next_steps() {
     printf "${GREEN}  MemX installed successfully!${NC}\n"
     printf "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
     printf "\n"
+    printf "Runtime user:\n"
+    printf "  %s\n" "$TARGET_USER"
+    printf "Data directory:\n"
+    printf "  %s\n" "$MEMX_HOME"
     printf "Binary path:\n"
     printf "  %s\n" "$TARGET"
     print_path_hint "$INSTALL_DIR"
     printf "\n"
     printf "Next steps:\n"
-    printf "  1. Run setup if you skipped it:\n"
-    printf "     %s setup\n" "$TARGET"
-    printf "  2. Validate config:\n"
-    printf "     %s doctor\n" "$TARGET"
-    printf "  3. Uninstall if needed:\n"
-    printf "     %s uninstall\n" "$TARGET"
-    printf "  4. Start the server:\n"
-    printf "     %s serve\n" "$TARGET"
+    printf "  1. Validate config:\n"
+    printf "     HOME=\"%s\" MEMX_HOME=\"%s\" %s doctor\n" "$TARGET_HOME" "$MEMX_HOME" "$TARGET"
+    printf "  2. Check service status:\n"
+    printf "     HOME=\"%s\" MEMX_HOME=\"%s\" %s service status\n" "$TARGET_HOME" "$MEMX_HOME" "$TARGET"
+    printf "  3. Remove the background service:\n"
+    printf "     HOME=\"%s\" MEMX_HOME=\"%s\" %s service remove\n" "$TARGET_HOME" "$MEMX_HOME" "$TARGET"
+    printf "  4. Uninstall MemX and delete local data:\n"
+    printf "     HOME=\"%s\" MEMX_HOME=\"%s\" %s uninstall\n" "$TARGET_HOME" "$MEMX_HOME" "$TARGET"
     printf "\n"
 }
 
@@ -370,6 +506,9 @@ run_install() {
     need_cmd mktemp
     need_cmd tar
     need_cmd find
+    need_cmd id
+
+    resolve_target_identity
 
     OS=$(detect_os)
     ARCH=$(detect_arch)
@@ -390,10 +529,24 @@ run_install() {
     success "Installed to $TARGET_PATH"
     verify_install "$TARGET_PATH"
     run_setup "$TARGET_PATH"
+    run_background_service "$TARGET_PATH"
     print_next_steps "$TARGET_PATH"
 }
 
+remove_background_service() {
+    TARGET_PATH="$1"
+
+    if [ -z "$TARGET_PATH" ] || [ ! -x "$TARGET_PATH" ]; then
+        return
+    fi
+
+    if run_as_target_user "$TARGET_PATH" service remove > /dev/null 2>&1; then
+        success "Removed MemX background service"
+    fi
+}
+
 run_uninstall() {
+    resolve_target_identity
     TARGET_PATH=$(find_installed_binary || true)
 
     printf "\n"
@@ -420,6 +573,8 @@ run_uninstall() {
         printf "Uninstall canceled.\n"
         return 0
     fi
+
+    remove_background_service "$TARGET_PATH"
 
     if [ -n "$TARGET_PATH" ] && [ -e "$TARGET_PATH" ]; then
         rm -f "$TARGET_PATH" || error "Failed to remove $TARGET_PATH"
