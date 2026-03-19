@@ -49,6 +49,22 @@ AI:    [searches MemX] → "I don't have that information stored."  ← won't ha
 
 ## Quick Start
 
+### One-line install
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/memxlab/memx/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/memxlab/memx/main/install.ps1 | iex
+```
+
+The installer downloads the latest GitHub release, installs `memx`, and launches `memx setup`.
+
 ### Prerequisites
 
 - Rust 1.70+

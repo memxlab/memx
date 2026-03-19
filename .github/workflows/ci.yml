@@ -36,6 +36,9 @@ jobs:
       - name: Run tests
         run: cargo test --locked
 
+      - name: Validate shell installer syntax
+        run: sh -n install.sh
+
   build-linux:
     name: Build Linux Artifact
     runs-on: ubuntu-22.04
@@ -78,6 +81,17 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
+
+      - name: Validate PowerShell installer syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
 
       - name: Package artifact
         shell: pwsh
