@@ -134,10 +134,14 @@ struct SearchFileConfig {
 // ── Config loading ─────────────────────────────────────────────────────────
 
 impl Config {
+    pub fn memx_dir_path() -> Result<PathBuf> {
+        let home = dirs::home_dir().context("Cannot determine home directory")?;
+        Ok(home.join(".memx"))
+    }
+
     /// Returns the `~/.memx` directory, creating it on first call.
     pub fn memx_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Cannot determine home directory")?;
-        let dir = home.join(".memx");
+        let dir = Self::memx_dir_path()?;
         if !dir.exists() {
             fs::create_dir_all(&dir)
                 .with_context(|| format!("Cannot create directory: {}", dir.display()))?;
@@ -146,7 +150,7 @@ impl Config {
     }
 
     pub fn config_path() -> Result<PathBuf> {
-        Ok(Self::memx_dir()?.join("config.toml"))
+        Ok(Self::memx_dir_path()?.join("config.toml"))
     }
 
     pub fn load_embedding_draft() -> Result<EmbeddingDraft> {
@@ -162,7 +166,7 @@ impl Config {
     }
 
     pub fn write_embedding_config(embedding: &EmbeddingConfig) -> Result<WriteConfigResult> {
-        let config_path = Self::config_path()?;
+        let config_path = Self::memx_dir()?.join("config.toml");
         let backup_path = if config_path.exists() {
             let backup_path = config_path.with_extension("toml.bak");
             fs::copy(&config_path, &backup_path).with_context(|| {

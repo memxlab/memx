@@ -65,6 +65,22 @@ irm https://raw.githubusercontent.com/memxlab/memx/main/install.ps1 | iex
 
 The installer downloads the latest GitHub release, installs `memx`, and launches `memx setup`.
 
+One-line uninstall:
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/memxlab/memx/main/install.sh | sh -s -- uninstall
+```
+
+Windows PowerShell:
+
+```powershell
+$env:MEMX_UNINSTALL="1"; irm https://raw.githubusercontent.com/memxlab/memx/main/install.ps1 | iex
+```
+
+The uninstall flow requires confirmation and warns that `~/.memx` data will be deleted.
+
 ### Prerequisites
 
 - Rust 1.70+
@@ -161,6 +177,7 @@ memx <COMMAND>
 Commands:
   setup   Interactively create or update the config
   doctor  Check config and embedding connectivity
+  uninstall  Remove the installed binary and local MemX data
   serve   Start the HTTP server
   add     Add a new memory
   search  Search memories
@@ -189,6 +206,12 @@ Options:
 
 ```bash
 memx doctor
+```
+
+### `memx uninstall`
+
+```bash
+memx uninstall [--yes]
 ```
 
 ### `memx add`

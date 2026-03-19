@@ -8,7 +8,9 @@ param(
         else {
             Join-Path $env:LOCALAPPDATA "MemX\bin"
         }),
-    [switch]$SkipSetup
+    [switch]$SkipSetup,
+    [switch]$Uninstall,
+    [switch]$Yes
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +19,9 @@ $Repo = if ($env:MEMX_REPO) { $env:MEMX_REPO } else { "memxlab/memx" }
 $Version = if ($env:MEMX_VERSION) { $env:MEMX_VERSION } else { "latest" }
 $DownloadBaseUrl = $env:MEMX_DOWNLOAD_BASE_URL
 $BinaryName = "memx.exe"
+$MemxHome = if ($env:MEMX_HOME) { $env:MEMX_HOME } else { Join-Path $HOME ".memx" }
+$ShouldUninstall = $Uninstall -or ($env:MEMX_UNINSTALL -eq "1")
+$AssumeYes = $Yes -or ($env:MEMX_YES -eq "1") -or ($env:MEMX_UNINSTALL_YES -eq "1")
 
 function Write-Step {
     param([string]$Message)
@@ -69,6 +74,24 @@ function Add-UserPath {
     return $true
 }
 
+function Remove-UserPath {
+    param([string]$PathEntry)
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $userPath) {
+        return $false
+    }
+
+    $entries = $userPath -split ";" | Where-Object { $_ -and $_ -ne $PathEntry }
+    if (($entries.Count -eq ($userPath -split ";" | Where-Object { $_ }).Count) -and (($env:Path -split ";") -notcontains $PathEntry)) {
+        return $false
+    }
+
+    [Environment]::SetEnvironmentVariable("Path", ($entries -join ";"), "User")
+    $env:Path = (($env:Path -split ";" | Where-Object { $_ -and $_ -ne $PathEntry }) -join ";")
+    return $true
+}
+
 function Test-InteractiveConsole {
     try {
         return (-not [Console]::IsInputRedirected) -and (-not [Console]::IsOutputRedirected)
@@ -76,6 +99,148 @@ function Test-InteractiveConsole {
     catch {
         return $true
     }
+}
+
+function Get-InstallDirCandidates {
+    param([string]$PreferredDir)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($candidate in @(
+            $PreferredDir,
+            $env:MEMX_INSTALL_DIR,
+            $(if ($env:MEMX_HOME) { Join-Path $env:MEMX_HOME "bin" } else { $null }),
+            (Join-Path $env:LOCALAPPDATA "MemX\bin"),
+            (Join-Path $HOME ".local\bin")
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidates.Contains($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    try {
+        $command = Get-Command $BinaryName -ErrorAction Stop
+        if ($command.CommandType -eq "Application") {
+            $commandDir = Split-Path $command.Path -Parent
+            if (-not $candidates.Contains($commandDir)) {
+                $candidates.Add($commandDir)
+            }
+        }
+    }
+    catch {
+    }
+
+    return $candidates
+}
+
+function Find-InstalledBinary {
+    param([string]$PreferredDir)
+
+    foreach ($dir in Get-InstallDirCandidates -PreferredDir $PreferredDir) {
+        $candidate = Join-Path $dir $BinaryName
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Confirm-Uninstall {
+    param(
+        [string]$BinaryPath,
+        [string]$BackupPath
+    )
+
+    Write-Warning "This will permanently delete your local MemX data."
+    Write-Host "Paths to be removed:"
+    Write-Host "  - $MemxHome"
+    Write-Host "    This includes config.toml, memory.db, and any backups under ~/.memx."
+
+    if ($BinaryPath) {
+        Write-Host "  - $BinaryPath"
+        if ($BackupPath -and (Test-Path $BackupPath)) {
+            Write-Host "  - $BackupPath"
+        }
+    }
+    else {
+        Write-Host "  - memx.exe in common install paths (not found)"
+    }
+
+    Write-Host ""
+    Write-Warning "Your local MemX data will be lost."
+
+    if ($AssumeYes) {
+        return $true
+    }
+
+    if (-not (Test-InteractiveConsole)) {
+        throw "No interactive terminal detected. Re-run with -Yes or set MEMX_YES=1."
+    }
+
+    $answer = Read-Host "Continue uninstall? [y/N]"
+    if ([string]::IsNullOrWhiteSpace($answer)) {
+        return $false
+    }
+
+    switch ($answer.Trim().ToLowerInvariant()) {
+        "y" { return $true }
+        "yes" { return $true }
+        default { return $false }
+    }
+}
+
+function Invoke-Uninstall {
+    param([string]$PreferredDir)
+
+    $targetPath = Find-InstalledBinary -PreferredDir $PreferredDir
+    $backupPath = if ($targetPath) { "$targetPath.bak" } else { $null }
+
+    Write-Host ""
+    Write-Step "MemX Uninstall"
+    Write-Host ""
+
+    if (-not (Confirm-Uninstall -BinaryPath $targetPath -BackupPath $backupPath)) {
+        Write-Host "Uninstall canceled."
+        return
+    }
+
+    if ($targetPath -and (Test-Path $targetPath)) {
+        Remove-Item -Path $targetPath -Force
+        Write-Host "Removed $targetPath"
+    }
+    else {
+        Write-Warning "Skipped binary removal (not found)."
+    }
+
+    if ($backupPath -and (Test-Path $backupPath)) {
+        Remove-Item -Path $backupPath -Force
+        Write-Host "Removed $backupPath"
+    }
+
+    if (Test-Path $MemxHome) {
+        Remove-Item -Path $MemxHome -Recurse -Force
+        Write-Host "Removed $MemxHome"
+    }
+    else {
+        Write-Warning "Skipped $MemxHome (not found)."
+    }
+
+    if ($targetPath) {
+        $installDir = Split-Path $targetPath -Parent
+        $pathRemoved = Remove-UserPath -PathEntry $installDir
+        if ($pathRemoved) {
+            Write-Host "Removed $installDir from your user PATH."
+        }
+    }
+
+    Write-Host ""
+    Write-Host "MemX uninstall complete." -ForegroundColor Green
+}
+
+if ($ShouldUninstall) {
+    Invoke-Uninstall -PreferredDir $InstallDir
+    return
 }
 
 $assetName = Get-AssetName
@@ -142,7 +307,9 @@ try {
     Write-Host "     $targetPath setup"
     Write-Host "  2. Validate config:"
     Write-Host "     $targetPath doctor"
-    Write-Host "  3. Start the server:"
+    Write-Host "  3. Uninstall if needed:"
+    Write-Host "     $targetPath uninstall"
+    Write-Host "  4. Start the server:"
     Write-Host "     $targetPath serve"
 }
 finally {

@@ -1,6 +1,9 @@
 #!/bin/sh
 # MemX installer for macOS and Linux
-# Usage: curl -fsSL https://raw.githubusercontent.com/memxlab/memx/main/install.sh | sh
+# Install:
+#   curl -fsSL https://raw.githubusercontent.com/memxlab/memx/main/install.sh | sh
+# Uninstall:
+#   curl -fsSL https://raw.githubusercontent.com/memxlab/memx/main/install.sh | sh -s -- uninstall
 set -e
 
 REPO="${MEMX_REPO:-memxlab/memx}"
@@ -9,6 +12,16 @@ DOWNLOAD_BASE_URL="${MEMX_DOWNLOAD_BASE_URL:-}"
 BINARY_NAME="memx"
 MEMX_HOME="${MEMX_HOME:-$HOME/.memx}"
 FALLBACK_INSTALL_DIR="$MEMX_HOME/bin"
+ACTION="${MEMX_ACTION:-install}"
+ASSUME_YES=0
+
+if [ "${MEMX_UNINSTALL:-0}" = "1" ]; then
+    ACTION="uninstall"
+fi
+
+if [ "${MEMX_YES:-0}" = "1" ] || [ "${MEMX_UNINSTALL_YES:-0}" = "1" ]; then
+    ASSUME_YES=1
+fi
 
 if [ -t 1 ]; then
     RED='\033[0;31m'
@@ -26,10 +39,48 @@ warn()    { printf "${YELLOW}!${NC}  %s\n" "$1" >&2; }
 error()   { printf "${RED}✗${NC}  %s\n" "$1" >&2; exit 1; }
 step()    { printf "${BOLD}→${NC}  %s\n" "$1"; }
 
+usage() {
+    cat <<EOF
+Usage:
+  install.sh [install] [--yes]
+  install.sh uninstall [--yes]
+
+Environment variables:
+  MEMX_VERSION             Release tag to install (default: latest)
+  MEMX_REPO                GitHub repo in owner/name format
+  MEMX_DOWNLOAD_BASE_URL   Override release asset base URL
+  MEMX_HOME                Override MemX data directory (default: ~/.memx)
+  MEMX_INSTALL_DIR         Override install directory
+  MEMX_INSTALL_SKIP_SETUP  Skip running 'memx setup' after install when set to 1
+  MEMX_UNINSTALL           Set to 1 to run uninstall mode
+  MEMX_YES                 Set to 1 to skip confirmation prompts
+EOF
+}
+
 need_cmd() {
     if ! command -v "$1" > /dev/null 2>&1; then
         error "Required command not found: $1"
     fi
+}
+
+parse_args() {
+    for arg in "$@"; do
+        case "$arg" in
+            install|uninstall)
+                ACTION="$arg"
+                ;;
+            --yes|-y)
+                ASSUME_YES=1
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                error "Unknown argument: $arg"
+                ;;
+        esac
+    done
 }
 
 detect_os() {
@@ -82,6 +133,70 @@ choose_install_dir() {
     done
 
     printf "%s\n" "$FALLBACK_INSTALL_DIR"
+}
+
+find_installed_binary() {
+    if [ -n "$MEMX_INSTALL_DIR" ] && [ -f "$MEMX_INSTALL_DIR/$BINARY_NAME" ]; then
+        printf "%s\n" "$MEMX_INSTALL_DIR/$BINARY_NAME"
+        return 0
+    fi
+
+    if command -v "$BINARY_NAME" > /dev/null 2>&1; then
+        CMD_PATH=$(command -v "$BINARY_NAME")
+        case "$CMD_PATH" in
+            /*)
+                if [ -f "$CMD_PATH" ]; then
+                    printf "%s\n" "$CMD_PATH"
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+
+    for candidate in \
+        "$HOME/.local/bin/$BINARY_NAME" \
+        "$HOME/bin/$BINARY_NAME" \
+        "$MEMX_HOME/bin/$BINARY_NAME" \
+        "/opt/homebrew/bin/$BINARY_NAME" \
+        "/usr/local/bin/$BINARY_NAME"
+    do
+        if [ -f "$candidate" ]; then
+            printf "%s\n" "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+prompt_yes_no_tty() {
+    LABEL="$1"
+    DEFAULT="$2"
+
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        error "No interactive terminal detected. Re-run with --yes to confirm uninstall."
+    fi
+
+    while :; do
+        if [ "$DEFAULT" = "yes" ]; then
+            SUFFIX="[Y/n]"
+        else
+            SUFFIX="[y/N]"
+        fi
+
+        printf "%s %s " "$LABEL" "$SUFFIX" > /dev/tty
+        IFS= read -r ANSWER < /dev/tty || error "Failed to read confirmation from terminal"
+
+        if [ -z "$ANSWER" ]; then
+            [ "$DEFAULT" = "yes" ] && return 0 || return 1
+        fi
+
+        case "$(printf '%s' "$ANSWER" | tr '[:upper:]' '[:lower:]')" in
+            y|yes) return 0 ;;
+            n|no)  return 1 ;;
+            *)     printf "Please answer y or n.\n" > /dev/tty ;;
+        esac
+    done
 }
 
 resolve_asset_name() {
@@ -239,12 +354,14 @@ print_next_steps() {
     printf "     %s setup\n" "$TARGET"
     printf "  2. Validate config:\n"
     printf "     %s doctor\n" "$TARGET"
-    printf "  3. Start the server:\n"
+    printf "  3. Uninstall if needed:\n"
+    printf "     %s uninstall\n" "$TARGET"
+    printf "  4. Start the server:\n"
     printf "     %s serve\n" "$TARGET"
     printf "\n"
 }
 
-main() {
+run_install() {
     printf "\n"
     info "MemX Installer"
     printf "\n"
@@ -274,6 +391,73 @@ main() {
     verify_install "$TARGET_PATH"
     run_setup "$TARGET_PATH"
     print_next_steps "$TARGET_PATH"
+}
+
+run_uninstall() {
+    TARGET_PATH=$(find_installed_binary || true)
+
+    printf "\n"
+    info "MemX Uninstall"
+    printf "\n"
+    warn "This will permanently delete your local MemX data."
+    printf "Paths to be removed:\n"
+    printf "  - %s\n" "$MEMX_HOME"
+    printf "    This includes config.toml, memory.db, and any backups under ~/.memx.\n"
+
+    if [ -n "$TARGET_PATH" ]; then
+        printf "  - %s\n" "$TARGET_PATH"
+        if [ -f "${TARGET_PATH}.bak" ]; then
+            printf "  - %s.bak\n" "$TARGET_PATH"
+        fi
+    else
+        printf "  - %s binary in common install paths (not found)\n" "$BINARY_NAME"
+    fi
+
+    printf "\n"
+    warn "Your local MemX data will be lost."
+
+    if [ "$ASSUME_YES" != "1" ] && ! prompt_yes_no_tty "Continue uninstall?" "no"; then
+        printf "Uninstall canceled.\n"
+        return 0
+    fi
+
+    if [ -n "$TARGET_PATH" ] && [ -e "$TARGET_PATH" ]; then
+        rm -f "$TARGET_PATH" || error "Failed to remove $TARGET_PATH"
+        success "Removed $TARGET_PATH"
+    else
+        warn "Skipped binary removal (not found)"
+    fi
+
+    if [ -n "$TARGET_PATH" ] && [ -e "${TARGET_PATH}.bak" ]; then
+        rm -f "${TARGET_PATH}.bak" || error "Failed to remove ${TARGET_PATH}.bak"
+        success "Removed ${TARGET_PATH}.bak"
+    fi
+
+    if [ -d "$MEMX_HOME" ]; then
+        rm -rf "$MEMX_HOME" || error "Failed to remove $MEMX_HOME"
+        success "Removed $MEMX_HOME"
+    else
+        warn "Skipped $MEMX_HOME (not found)"
+    fi
+
+    printf "\n"
+    success "MemX uninstall complete"
+}
+
+main() {
+    parse_args "$@"
+
+    case "$ACTION" in
+        install)
+            run_install
+            ;;
+        uninstall)
+            run_uninstall
+            ;;
+        *)
+            error "Unsupported action: $ACTION"
+            ;;
+    esac
 }
 
 main "$@"

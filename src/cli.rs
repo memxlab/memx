@@ -1,8 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use axum::Router;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::io::{self, Write};
-use std::path::Path;
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::{Component, Path, PathBuf},
+};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
@@ -31,6 +34,8 @@ enum Commands {
     Setup(SetupArgs),
     /// Check config and embedding connectivity
     Doctor,
+    /// Remove the installed binary and local MemX data
+    Uninstall(UninstallArgs),
     /// Start the HTTP server
     Serve,
     /// Add a new memory
@@ -97,6 +102,13 @@ struct SetupArgs {
     yes: bool,
 }
 
+#[derive(Args, Debug, Clone)]
+struct UninstallArgs {
+    /// Skip the confirmation prompt
+    #[arg(long)]
+    yes: bool,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 enum ProviderPreset {
     Deepinfra,
@@ -134,6 +146,7 @@ pub async fn run() -> Result<()> {
     match cli.command {
         Commands::Setup(args) => cmd_setup(args).await,
         Commands::Doctor => cmd_doctor().await,
+        Commands::Uninstall(args) => cmd_uninstall(args),
         Commands::Serve => cmd_serve().await,
         Commands::Add {
             content,
@@ -286,6 +299,83 @@ async fn cmd_doctor() -> Result<()> {
         config.embedding.dimension,
         detected_dimension
     );
+}
+
+fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
+    let memx_dir = Config::memx_dir_path()?;
+    let binary_path = env::current_exe().context("Cannot determine current executable path")?;
+    let backup_binary_path = binary_backup_path(&binary_path);
+    let manages_binary = is_managed_binary_path(&binary_path);
+
+    println!("MemX uninstall");
+    println!();
+    println!("This will permanently delete:");
+    println!("  - {}", memx_dir.display());
+    println!("    This includes config.toml, memory.db, and any backups under ~/.memx.");
+
+    if manages_binary {
+        println!("  - {}", binary_path.display());
+        if backup_binary_path.exists() {
+            println!("  - {}", backup_binary_path.display());
+        }
+    } else {
+        println!("  - local MemX data only");
+        println!(
+            "    The current executable looks like a development binary and will not be removed automatically."
+        );
+    }
+
+    println!();
+    println!("Your local MemX data will be lost.");
+
+    if !args.yes && !prompt_yes_no("Continue uninstall?", false)? {
+        println!("Uninstall canceled.");
+        return Ok(());
+    }
+
+    if memx_dir.exists() {
+        fs::remove_dir_all(&memx_dir)
+            .with_context(|| format!("Failed to remove {}", memx_dir.display()))?;
+        println!("Removed {}", memx_dir.display());
+    } else {
+        println!("Skipped {} (not found)", memx_dir.display());
+    }
+
+    match uninstall_current_binary(&binary_path)? {
+        #[cfg(not(windows))]
+        BinaryUninstallStatus::Removed => {
+            println!("Removed {}", binary_path.display());
+        }
+        #[cfg(windows)]
+        BinaryUninstallStatus::Scheduled => {
+            println!(
+                "Scheduled removal of {} after this process exits",
+                binary_path.display()
+            );
+        }
+        BinaryUninstallStatus::SkippedDevelopmentBinary => {
+            println!(
+                "Skipped removing {} because it looks like a Cargo build output",
+                binary_path.display()
+            );
+        }
+        BinaryUninstallStatus::NotFound => {
+            println!("Skipped {} (not found)", binary_path.display());
+        }
+    }
+
+    if manages_binary {
+        if backup_binary_path.exists() {
+            remove_file_if_exists(&backup_binary_path)?;
+            println!("Removed {}", backup_binary_path.display());
+        } else {
+            println!("Skipped {} (not found)", backup_binary_path.display());
+        }
+    }
+
+    println!();
+    println!("MemX uninstall complete.");
+    Ok(())
 }
 
 async fn cmd_serve() -> Result<()> {
@@ -773,4 +863,123 @@ fn format_timestamp(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|dt| dt.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| ts.to_string())
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum BinaryUninstallStatus {
+    #[cfg(not(windows))]
+    Removed,
+    #[cfg(windows)]
+    Scheduled,
+    SkippedDevelopmentBinary,
+    NotFound,
+}
+
+fn uninstall_current_binary(binary_path: &Path) -> Result<BinaryUninstallStatus> {
+    if !is_managed_binary_path(binary_path) {
+        return Ok(BinaryUninstallStatus::SkippedDevelopmentBinary);
+    }
+
+    if !binary_path.exists() {
+        return Ok(BinaryUninstallStatus::NotFound);
+    }
+
+    #[cfg(windows)]
+    {
+        schedule_windows_binary_removal(binary_path)?;
+        Ok(BinaryUninstallStatus::Scheduled)
+    }
+
+    #[cfg(not(windows))]
+    {
+        remove_file_if_exists(binary_path)?;
+        Ok(BinaryUninstallStatus::Removed)
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path).with_context(|| format!("Failed to remove {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn binary_backup_path(binary_path: &Path) -> PathBuf {
+    let file_name = binary_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("memx");
+    binary_path.with_file_name(format!("{file_name}.bak"))
+}
+
+fn is_managed_binary_path(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|value| value.to_str()),
+        Some("memx") | Some("memx.exe")
+    ) && !looks_like_cargo_target_binary(path)
+}
+
+fn looks_like_cargo_target_binary(path: &Path) -> bool {
+    let mut saw_target = false;
+
+    for component in path.components() {
+        let Component::Normal(value) = component else {
+            continue;
+        };
+
+        if value == "target" {
+            saw_target = true;
+            continue;
+        }
+
+        if saw_target && (value == "debug" || value == "release") {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn schedule_windows_binary_removal(binary_path: &Path) -> Result<()> {
+    let command = format!(
+        "ping 127.0.0.1 -n 3 >NUL & del /f /q \"{}\" >NUL 2>&1",
+        binary_path.display()
+    );
+
+    std::process::Command::new("cmd")
+        .args(["/C", &command])
+        .spawn()
+        .with_context(|| format!("Failed to schedule removal of {}", binary_path.display()))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{binary_backup_path, is_managed_binary_path, looks_like_cargo_target_binary};
+    use std::path::Path;
+
+    #[test]
+    fn cargo_target_binary_is_not_treated_as_managed_install() {
+        let path = Path::new("/tmp/memx-app/target/debug/memx");
+        assert!(looks_like_cargo_target_binary(path));
+        assert!(!is_managed_binary_path(path));
+    }
+
+    #[test]
+    fn installed_binary_path_is_treated_as_managed_install() {
+        let path = Path::new("/Users/demo/.local/bin/memx");
+        assert!(!looks_like_cargo_target_binary(path));
+        assert!(is_managed_binary_path(path));
+    }
+
+    #[test]
+    fn backup_binary_path_appends_bak_suffix() {
+        let path = Path::new("/Users/demo/.local/bin/memx");
+        assert_eq!(
+            binary_backup_path(path),
+            Path::new("/Users/demo/.local/bin/memx.bak")
+        );
+    }
 }
