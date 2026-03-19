@@ -1,0 +1,41 @@
+{
+  "id": "memx-openclaw",
+  "name": "MemX OpenClaw Plugin",
+  "description": "Automatic memory recall and save for OpenClaw backed by MemX",
+  "version": "0.1.0",
+  "kind": "context-engine",
+  "contextEngine": true,
+  "main": "./index.js",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "MemX base URL",
+        "default": "http://127.0.0.1:7878"
+      },
+      "topK": {
+        "type": "integer",
+        "description": "Maximum number of memories to inject before each reply",
+        "default": 5
+      },
+      "memoryType": {
+        "type": "string",
+        "description": "MemX memory type used when saving turns",
+        "enum": ["episodic", "semantic", "procedural", "emotional", "reflective"],
+        "default": "episodic"
+      },
+      "saveAssistantMessages": {
+        "type": "boolean",
+        "description": "Whether assistant replies should be stored together with the user turn",
+        "default": false
+      },
+      "minContentChars": {
+        "type": "integer",
+        "description": "Minimum number of characters required before a message is stored",
+        "default": 8
+      }
+    }
+  }
+}

@@ -114,6 +114,73 @@ async fn vector_search_brute(
     Ok(memories)
 }
 
+/// Build a FTS5 MATCH query with mixed AND/OR logic:
+///
+///   - CJK characters use OR (partial match is useful for ideographs)
+///   - Non-CJK words use implicit AND (all words should be present)
+///
+/// Examples:
+///   "我是谁"              → `("我" OR "是" OR "谁")`
+///   "database"            → `"database"`
+///   "hello world"         → `"hello" "world"`  (implicit AND)
+///   "hello 你好 world"    → `"hello" ("你" OR "好") "world"`
+///   "test你好world"       → `"test" ("你" OR "好") "world"`
+fn build_fts_query(query: &str) -> String {
+    use super::fts::is_cjk;
+
+    let mut parts: Vec<String> = Vec::new();
+
+    for word in query.split_whitespace() {
+        if word.chars().any(is_cjk) {
+            // Mixed or pure CJK word: accumulate non-CJK runs as whole tokens,
+            // emit each CJK char individually, then group CJK chars with OR.
+            let mut ascii_buf = String::new();
+            let mut cjk_chars: Vec<char> = Vec::new();
+
+            for ch in word.chars() {
+                if is_cjk(ch) {
+                    if !ascii_buf.is_empty() {
+                        parts.push(format!("\"{}\"", ascii_buf.replace('"', "\"\"")));
+                        ascii_buf.clear();
+                    }
+                    cjk_chars.push(ch);
+                } else {
+                    if !cjk_chars.is_empty() {
+                        parts.push(cjk_or_group(&cjk_chars));
+                        cjk_chars.clear();
+                    }
+                    ascii_buf.push(ch);
+                }
+            }
+
+            if !ascii_buf.is_empty() {
+                parts.push(format!("\"{}\"", ascii_buf.replace('"', "\"\"")));
+            }
+            if !cjk_chars.is_empty() {
+                parts.push(cjk_or_group(&cjk_chars));
+            }
+        } else {
+            // Pure non-CJK word: emit as AND term (implicit AND between parts)
+            parts.push(format!("\"{}\"", word.replace('"', "\"\"")));
+        }
+    }
+
+    if parts.is_empty() {
+        return format!("\"{}\"", query.replace('"', "\"\""));
+    }
+
+    parts.join(" ")
+}
+
+/// Wrap CJK characters in an OR group: `("我" OR "是" OR "谁")`
+fn cjk_or_group(chars: &[char]) -> String {
+    if chars.len() == 1 {
+        return format!("\"{}\"", chars[0]);
+    }
+    let inner: Vec<String> = chars.iter().map(|c| format!("\"{}\"", c)).collect();
+    format!("({})", inner.join(" OR "))
+}
+
 pub async fn keyword_search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Memory>> {
     let stmt = conn
         .prepare(
@@ -131,8 +198,7 @@ pub async fn keyword_search(conn: &Connection, query: &str, limit: usize) -> Res
         )
         .await?;
 
-    // Wrap in double quotes to escape FTS5 special characters (*, ?, +, etc.)
-    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+    let fts_query = build_fts_query(query);
     let mut rows = stmt.query(params![fts_query, limit as i64]).await?;
     let mut memories = Vec::new();
 
@@ -254,30 +320,32 @@ fn rrf_merge(vec_results: Vec<Memory>, kw_results: Vec<Memory>) -> Vec<Memory> {
 
     const RRF_K: f64 = 60.0;
 
-    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut rrf_scores: HashMap<String, f64> = HashMap::new();
     let mut memories: HashMap<String, Memory> = HashMap::new();
 
-    // Vector search results
+    // Vector search results (memory.score already holds the cosine similarity)
     for (rank, memory) in vec_results.into_iter().enumerate() {
         let score = 1.0 / (RRF_K + (rank + 1) as f64);
-        *scores.entry(memory.id.clone()).or_insert(0.0) += score;
+        *rrf_scores.entry(memory.id.clone()).or_insert(0.0) += score;
         memories.insert(memory.id.clone(), memory);
     }
 
-    // Keyword search results
+    // Keyword search results (memory.score is None; prefer vec version if present)
     for (rank, memory) in kw_results.into_iter().enumerate() {
         let score = 1.0 / (RRF_K + (rank + 1) as f64);
-        *scores.entry(memory.id.clone()).or_insert(0.0) += score;
+        *rrf_scores.entry(memory.id.clone()).or_insert(0.0) += score;
         memories.entry(memory.id.clone()).or_insert(memory);
     }
 
-    memories
-        .into_iter()
-        .map(|(id, mut memory)| {
-            memory.score = scores.get(&id).copied();
-            memory
-        })
-        .collect()
+    // Sort by RRF score (descending) but PRESERVE the original vector similarity
+    // in memory.score so that apply_multidim_scoring uses actual semantic relevance.
+    let mut result: Vec<Memory> = memories.into_values().collect();
+    result.sort_by(|a, b| {
+        let sa = rrf_scores.get(&a.id).unwrap_or(&0.0);
+        let sb = rrf_scores.get(&b.id).unwrap_or(&0.0);
+        sb.partial_cmp(sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    result
 }
 
 fn apply_multidim_scoring(memories: Vec<Memory>, opts: SearchOptions) -> Vec<Memory> {
@@ -556,6 +624,34 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, match_memory.id);
+
+        cleanup(path);
+    }
+
+    #[tokio::test]
+    async fn keyword_search_matches_partial_cjk() {
+        let (conn, path) = open_test_db("search").await;
+        init_schema(&conn, 4).await.unwrap();
+
+        let memory = create_memory(
+            &conn,
+            MemoryInput {
+                content: "用户喜欢喝咖啡".to_string(),
+                memory_type: Some(MemoryType::Semantic),
+                tags: None,
+                metadata: None,
+                importance: None,
+            },
+            vec![0.1, 0.2, 0.3, 0.4],
+        )
+        .await
+        .unwrap();
+
+        // "喜欢喝茶" shares "喜", "欢", "喝" with "用户喜欢喝咖啡"
+        let results = keyword_search(&conn, "喜欢喝茶", 10).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, memory.id);
 
         cleanup(path);
     }

@@ -1,4 +1,5 @@
 mod connection;
+mod fts;
 mod links;
 mod memory;
 mod schema;

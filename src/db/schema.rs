@@ -1,5 +1,6 @@
+use crate::db::fts::preprocess_for_fts;
 use crate::error::Result;
-use libsql::Connection;
+use libsql::{params, Connection};
 
 pub async fn init_schema(conn: &Connection, embedding_dimension: usize) -> Result<()> {
     // Create the memories table
@@ -25,6 +26,12 @@ pub async fn init_schema(conn: &Connection, embedding_dimension: usize) -> Resul
     ensure_embedding_dimension(conn, embedding_dimension).await?;
     ensure_column(conn, "memories", "retrieval_count", "INTEGER DEFAULT 0").await?;
     ensure_column(conn, "memories", "last_retrieved_at", "INTEGER").await?;
+    ensure_column(conn, "memories", "search_content", "TEXT").await?;
+
+    // Backfill search_content for any existing rows that predate this column.
+    // preprocess_for_fts() spaces-out CJK characters so unicode61 indexes each
+    // character as an individual token, enabling partial CJK matching.
+    backfill_search_content(conn).await?;
 
     // Drop the old B-tree vector index because it cannot accelerate vector search
     conn.execute("DROP INDEX IF EXISTS idx_embedding", ())
@@ -59,11 +66,16 @@ pub async fn init_schema(conn: &Connection, embedding_dimension: usize) -> Resul
     )
     .await?;
 
-    // FTS5 full-text index (external content, no data duplication)
+    // Migrate: drop the old FTS5 table that indexed raw `content`.
+    // We now index `search_content` (preprocessed for CJK partial matching).
+    migrate_fts(conn).await?;
+
+    // FTS5 index on search_content (external content table, no data duplication).
+    // search_content stores CJK-char-spaced text so every character is its own token.
     conn.execute(
         r#"
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            content,
+            search_content,
             content='memories',
             content_rowid='rowid',
             tokenize='unicode61 remove_diacritics 0'
@@ -77,7 +89,7 @@ pub async fn init_schema(conn: &Connection, embedding_dimension: usize) -> Resul
     conn.execute(
         r#"
         CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            INSERT INTO memories_fts(rowid, search_content) VALUES (new.rowid, new.search_content);
         END
         "#,
         (),
@@ -87,7 +99,7 @@ pub async fn init_schema(conn: &Connection, embedding_dimension: usize) -> Resul
     conn.execute(
         r#"
         CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            INSERT INTO memories_fts(memories_fts, rowid, search_content) VALUES('delete', old.rowid, old.search_content);
         END
         "#,
         (),
@@ -97,8 +109,8 @@ pub async fn init_schema(conn: &Connection, embedding_dimension: usize) -> Resul
     conn.execute(
         r#"
         CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-            INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            INSERT INTO memories_fts(memories_fts, rowid, search_content) VALUES('delete', old.rowid, old.search_content);
+            INSERT INTO memories_fts(rowid, search_content) VALUES (new.rowid, new.search_content);
         END
         "#,
         (),
@@ -217,6 +229,60 @@ async fn embedding_dimension(conn: &Connection, table: &str) -> Result<Option<us
     }
 
     Ok(None)
+}
+
+/// Drop old FTS artifacts that indexed raw `content` and recreate for `search_content`.
+/// Safe to call repeatedly (checks existence before acting).
+async fn migrate_fts(conn: &Connection) -> Result<()> {
+    // Check whether the current FTS table indexes `content` (old) or `search_content` (new).
+    // If it indexes `content`, drop it and let init_schema recreate it on `search_content`.
+    let stmt = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'")
+        .await?;
+    let mut rows = stmt.query(()).await?;
+
+    if let Some(row) = rows.next().await? {
+        let sql: String = row.get(0)?;
+        if !sql.contains("search_content") {
+            // Old table: drop triggers + table so they get recreated below
+            for ddl in [
+                "DROP TRIGGER IF EXISTS memories_ai",
+                "DROP TRIGGER IF EXISTS memories_ad",
+                "DROP TRIGGER IF EXISTS memories_au",
+                "DROP TABLE IF EXISTS memories_fts",
+            ] {
+                conn.execute(ddl, ()).await.ok();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Populate search_content for any rows where it is still NULL.
+/// Called once during init_schema after adding the column.
+async fn backfill_search_content(conn: &Connection) -> Result<()> {
+    let stmt = conn
+        .prepare("SELECT rowid, content FROM memories WHERE search_content IS NULL")
+        .await?;
+    let mut rows = stmt.query(()).await?;
+
+    let mut updates: Vec<(i64, String)> = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let rowid: i64 = row.get(0)?;
+        let content: String = row.get(1)?;
+        updates.push((rowid, preprocess_for_fts(&content)));
+    }
+
+    for (rowid, preprocessed) in updates {
+        conn.execute(
+            "UPDATE memories SET search_content = ? WHERE rowid = ?",
+            params![preprocessed, rowid],
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 fn parse_vector_dimension(type_name: &str) -> Option<usize> {

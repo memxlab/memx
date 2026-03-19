@@ -33,23 +33,55 @@ impl EmbedClient {
     pub fn new(api_key: String, base_url: String, model: String, dimension: usize) -> Self {
         Self {
             api_key,
-            base_url,
+            base_url: sanitize_base_url(&base_url),
             model,
             dimension,
-            client: Client::new(),
+            client: Client::builder()
+                .pool_max_idle_per_host(1)
+                .pool_idle_timeout(Duration::from_secs(30))
+                .build()
+                .expect("failed to build HTTP client"),
         }
     }
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let url = format!("{}/embeddings", self.base_url);
+        let embedding = self.request_embedding(text).await?;
+        if embedding.len() != self.dimension {
+            return Err(AppError::Embedding(format!(
+                "Expected dimension {}, got {}",
+                self.dimension,
+                embedding.len()
+            )));
+        }
 
+        Ok(embedding)
+    }
+
+    pub async fn detect_dimension(
+        api_key: String,
+        base_url: String,
+        model: String,
+        text: &str,
+    ) -> Result<usize> {
+        let client = Self::new(api_key, base_url, model, 1);
+        let embedding = client.request_embedding(text).await?;
+        if embedding.is_empty() {
+            return Err(AppError::Embedding(
+                "Embedding API returned an empty vector".to_string(),
+            ));
+        }
+
+        Ok(embedding.len())
+    }
+
+    async fn request_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        let url = format!("{}/embeddings", self.base_url);
         let request = EmbedRequest {
             model: self.model.clone(),
             input: text.to_string(),
             encoding_format: "float".to_string(),
         };
 
-        // Retry up to 5 times with exponential backoff for 429 rate-limit responses
         let mut delay = Duration::from_secs(5);
         for attempt in 0..5 {
             let response = self
@@ -100,19 +132,13 @@ impl EmbedClient {
                 return Err(AppError::Embedding("Empty response from API".to_string()));
             }
 
-            let embedding = embed_response.data[0].embedding.clone();
-
-            if embedding.len() != self.dimension {
-                return Err(AppError::Embedding(format!(
-                    "Expected dimension {}, got {}",
-                    self.dimension,
-                    embedding.len()
-                )));
-            }
-
-            return Ok(embedding);
+            return Ok(embed_response.data[0].embedding.clone());
         }
 
         Err(AppError::Embedding("Exhausted retries".to_string()))
     }
+}
+
+fn sanitize_base_url(base_url: &str) -> String {
+    base_url.trim_end_matches('/').to_string()
 }

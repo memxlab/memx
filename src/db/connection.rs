@@ -12,6 +12,8 @@ impl DbPool {
     pub async fn new(database_path: &str) -> Result<Self> {
         let db = Builder::new_local(database_path).build().await?;
         let conn = db.connect()?;
+        conn.execute("PRAGMA cache_size = -512", ()).await?;
+        conn.execute("PRAGMA temp_store = MEMORY", ()).await?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),

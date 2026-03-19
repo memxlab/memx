@@ -1,21 +1,18 @@
 ---
 name: memx
 description: |
-  Local-first persistent memory service for agents.
+  MemX — the user's personal second brain. A persistent memory service that stores personal facts, preferences, health info, work knowledge, technical lessons, and life experiences.
 
-  Use when users say:
-  - "Remember this"
-  - "Help me recall what we mentioned before"
-  - "Search my memories"
-  - "Update this memory"
-  - "Delete this memory"
-  - "Create a link between these two memories"
-  - "memx is not working"
+  Use this skill proactively whenever:
+  - The user's question could benefit from their personal context (planning activities, making recommendations, health/diet advice, debugging similar issues, technical decisions, travel planning, gift ideas)
+  - The user shares new personal information, preferences, work insights, solutions to problems, or experiences worth remembering — even if they don't explicitly ask to save it
+  - The user explicitly asks to remember, recall, update, delete, or link memories
+  - MemX setup, configuration, or troubleshooting is needed
 ---
 
 # memx
 
-memx is a local-first long-term memory service for storing reusable preferences, facts, project context, and learned experience.
+memx is the user's personal second brain — a local-first long-term memory service for storing personal facts, preferences, health information, work knowledge, technical lessons learned, and life experiences.
 
 Work primarily through the existing HTTP APIs:
 
@@ -35,6 +32,16 @@ If the task involves startup failure, config issues, embedding connectivity, or 
 
 Use this skill in these situations:
 
+Proactive recall — the user's question might benefit from personal context:
+
+- "Help me plan a weekend trip to the park" (may have health/allergy info)
+- "What should I eat for dinner?" (may have dietary preferences or restrictions)
+- "I'm debugging a connection timeout issue" (may have past debugging lessons)
+- "Which framework should I use for this project?" (may have past technical decisions)
+- "Recommend a gift for my mom" (may have relationship/preference info)
+
+Explicit memory operations:
+
 - "Remember this"
 - "Don't forget this later"
 - "Help me find a preference I mentioned before"
@@ -42,6 +49,16 @@ Use this skill in these situations:
 - "Update this memory"
 - "Delete this incorrect memory"
 - "Link these two memories together"
+
+Proactive saving — the user shares something worth remembering:
+
+- "I'm allergic to pollen" (health fact, save it)
+- "I finally fixed that bug by clearing the DNS cache" (technical lesson, save it)
+- "I prefer dark mode in all my apps" (preference, save it)
+- "We decided to use PostgreSQL for this project" (decision, save it)
+
+Troubleshooting:
+
 - "memx won't start"
 - "memx can't find anything"
 
@@ -49,10 +66,12 @@ Use this skill in these situations:
 
 Good fit for:
 
-- Long-term preferences such as food, work habits, or expression style
-- Stable facts such as identity details, project facts, or technical choices
-- Procedural knowledge such as repeatable workflows, SOPs, or common commands
-- Reflective summaries such as retrospectives, conclusions, or lessons learned
+- Personal context that could improve any future response: health conditions, allergies, dietary needs, hobbies, routines, relationships
+- Work knowledge: technical lessons learned, debugging insights, architectural decisions, project context, tool preferences
+- Long-term preferences: food, communication style, work habits, expression style
+- Stable facts: identity details, project facts, technical choices
+- Procedural knowledge: repeatable workflows, SOPs, common commands
+- Reflective summaries: retrospectives, conclusions, lessons learned
 - Memory graphs that need explicit links between items
 
 ## When NOT To Use
@@ -122,6 +141,8 @@ Do not treat "the service process started" as done; there must be at least one w
 
 Choose the action based on user intent:
 
+- **Proactive recall**: If the user's question could benefit from personal context (planning, recommendations, health, debugging, decisions), search memories first before answering. If no results are found, proceed without memory context — do not retry with a different query.
+- **Proactive save**: If the user mentions personal facts, preferences, health info, work insights, or lessons learned in passing, create a memory even if they don't explicitly ask. Use your judgment — not every casual remark needs saving.
 - Remember new content: create a memory
 - Recall related content: search memories
 - View details for one item: read by ID

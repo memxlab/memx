@@ -32,6 +32,7 @@ AI:    [searches MemX] → "I don't have that information stored."  ← won't ha
 
 ## Features
 
+- **Unified binary** — `memx setup/doctor/serve` cover bootstrap, validation, and service mode; `memx add/search/list` operate the DB directly from the CLI
 - **Local-first** — all data stored in a single libSQL file on your machine, forever yours
 - **Single-file portability** — moving to a new computer is just copying one file
 - **Native vector search** — libSQL built-in vector functions + DiskANN index
@@ -53,21 +54,29 @@ AI:    [searches MemX] → "I don't have that information stored."  ← won't ha
 - Rust 1.70+
 - An OpenAI-compatible embedding API (DeepInfra / OpenAI / Ollama / LM Studio / SiliconFlow)
 
-### 1. First run — generate config
+### 1. First run — create config
 
 ```bash
-cargo run --release
+cargo run --release -- setup
 ```
 
-On first run, MemX auto-creates `~/.memx/config.toml` and exits, asking you to fill in your API key.
+`memx setup` prompts for your embedding provider, model, base URL, API key, and auto-detects the vector dimension when possible.
 
-### 2. Edit config
+### 2. Validate config
+
+```bash
+cargo run --release -- doctor
+```
+
+You should see checks for config presence, API connectivity, and vector dimension consistency.
+
+### 3. Edit config manually if needed
 
 ```bash
 vim ~/.memx/config.toml
 ```
 
-Minimum required — set your embedding API key:
+The generated config stores these fields:
 
 ```toml
 [embedding]
@@ -87,14 +96,36 @@ model = "nomic-embed-text"
 dimension = 768
 ```
 
-### 3. Start the service
+### 4. Start the service
 
 ```bash
-cargo run --release
+cargo run --release -- serve
 # → Listening on http://127.0.0.1:7878
 ```
 
-### 4. Try it
+### 5. Try it — CLI
+
+MemX has a built-in CLI for direct database operations without starting the server:
+
+```bash
+# Add a memory
+memx add "I prefer dark mode in all editors" --type emotional --tags "preferences" --importance 0.8
+# ✓ Memory created [a1b2c3d4]
+
+# Search memories
+memx search "editor preferences" --limit 5
+# Found 1 results for "editor preferences":
+#
+#   [a1b2c3d4] (score: 0.91) 2025-01-15
+#   I prefer dark mode in all editors
+
+# List recent memories
+memx list --limit 10
+```
+
+All CLI commands share the same database as the server — no server process needed.
+
+### 5. Try it — REST API
 
 ```bash
 # Store a memory
@@ -104,6 +135,74 @@ curl -X POST http://127.0.0.1:7878/memories \
 
 # Search memories
 curl "http://127.0.0.1:7878/memories/search?q=editor+preferences&limit=5"
+```
+
+## CLI Reference
+
+```
+memx <COMMAND>
+
+Commands:
+  setup   Interactively create or update the config
+  doctor  Check config and embedding connectivity
+  serve   Start the HTTP server
+  add     Add a new memory
+  search  Search memories
+  list    List recent memories
+  help    Print help
+```
+
+### `memx setup`
+
+```bash
+memx setup [OPTIONS]
+
+Options:
+  --provider <PROVIDER>    Provider preset used to prefill defaults
+  --base-url <BASE_URL>    Embedding API base URL
+  --model <MODEL>          Embedding model name
+  --api-key <API_KEY>      Embedding API key
+  --dimension <DIMENSION>  Embedding vector dimension
+  --non-interactive        Disable interactive prompts
+  --skip-validate          Skip remote validation
+  --force                  Overwrite existing config without an extra prompt
+  --yes                    Accept default confirmations
+```
+
+### `memx doctor`
+
+```bash
+memx doctor
+```
+
+### `memx add`
+
+```bash
+memx add <CONTENT> [OPTIONS]
+
+Options:
+  --type <TYPE>              Memory type: semantic | episodic | procedural | emotional | reflective
+  --tags <TAGS>              Comma-separated tags  (e.g. "rust,programming")
+  --importance <IMPORTANCE>  Importance score 0.0–1.0
+```
+
+### `memx search`
+
+```bash
+memx search <QUERY> [OPTIONS]
+
+Options:
+  --limit <N>   Maximum results to return  [default: 10]
+```
+
+### `memx list`
+
+```bash
+memx list [OPTIONS]
+
+Options:
+  --limit <N>    Maximum results to return  [default: 20]
+  --offset <N>   Pagination offset          [default: 0]
 ```
 
 ---
@@ -123,6 +222,14 @@ curl "http://127.0.0.1:7878/memories/search?q=editor+preferences&limit=5"
 | `DELETE` | `/memories/links/:link_id` | Delete a link                  |
 
 Full API reference: [README.md](README.md)
+
+## MCP Tools
+
+| Tool            | Description                  |
+| --------------- | ---------------------------- |
+| `memory_add`    | Store a new memory           |
+| `memory_search` | Search related memories      |
+| `memory_list`   | List recent memories         |
 
 ---
 
@@ -192,6 +299,7 @@ All fields can be overridden via environment variables (`EMBEDDING_API_KEY`, `SE
 | Database         | [libSQL](https://github.com/tursodatabase/libsql) 0.9 (native vector support) |
 | Async runtime    | [tokio](https://tokio.rs/) 1.x                                                |
 | Embedding client | [reqwest](https://github.com/seanmonstar/reqwest) (OpenAI-compatible)         |
+| CLI              | [clap](https://github.com/clap-rs/clap) 4 (derive API)                       |
 | Serialization    | serde + serde_json                                                            |
 
 ---

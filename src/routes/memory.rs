@@ -1,9 +1,6 @@
-use crate::db::{
-    create_memory, delete_memory, get_memory, list_memories, track_access, update_memory, DbPool,
-    MemoryInput, SearchOptions,
-};
-use crate::embed::EmbedClient;
+use crate::db::{delete_memory, get_memory, track_access, MemoryInput};
 use crate::error::Result;
+use crate::service::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -12,13 +9,6 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-
-#[derive(Clone)]
-pub struct AppState {
-    pub db: DbPool,
-    pub embed_client: EmbedClient,
-    pub search_options: SearchOptions,
-}
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -50,12 +40,7 @@ async fn create_memory_handler(
     State(state): State<AppState>,
     Json(input): Json<MemoryInput>,
 ) -> Result<impl IntoResponse> {
-    // Generate the embedding
-    let embedding = state.embed_client.embed(&input.content).await?;
-
-    // Create the memory
-    let conn = state.db.get().await;
-    let memory = create_memory(&conn, input, embedding).await?;
+    let memory = state.memx.add_memory(input).await?;
 
     let response = CreateResponse {
         id: memory.id,
@@ -73,7 +58,7 @@ async fn get_memory_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let conn = state.db.get().await;
+    let conn = state.memx.db().get().await;
 
     // Track access
     if let Err(err) = track_access(&conn, &id).await {
@@ -89,22 +74,7 @@ async fn update_memory_handler(
     Path(id): Path<String>,
     Json(input): Json<MemoryInput>,
 ) -> Result<impl IntoResponse> {
-    let conn = state.db.get().await;
-
-    // Recompute the embedding if the content changed
-    let embedding = if input.content.is_empty() {
-        None
-    } else {
-        Some(state.embed_client.embed(&input.content).await?)
-    };
-
-    let content = if input.content.is_empty() {
-        None
-    } else {
-        Some(input.content)
-    };
-
-    let memory = update_memory(&conn, &id, content, embedding, input.importance).await?;
+    let memory = state.memx.update_memory(&id, input).await?;
     Ok(Json(memory))
 }
 
@@ -112,7 +82,7 @@ async fn delete_memory_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let conn = state.db.get().await;
+    let conn = state.memx.db().get().await;
     delete_memory(&conn, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -121,7 +91,6 @@ async fn list_memories_handler(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<impl IntoResponse> {
-    let conn = state.db.get().await;
-    let memories = list_memories(&conn, query.limit, query.offset).await?;
+    let memories = state.memx.list_memories(query.limit, query.offset).await?;
     Ok(Json(memories))
 }

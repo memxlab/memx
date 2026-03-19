@@ -1,3 +1,4 @@
+use crate::db::fts::preprocess_for_fts;
 use crate::db::types::{Memory, MemoryInput, MemoryType};
 use crate::error::{AppError, Result};
 use chrono::Utc;
@@ -23,17 +24,19 @@ pub async fn create_memory(
     let importance = input.importance.unwrap_or(0.5_f64).clamp(0.0, 1.0);
     let embedding_json = serde_json::to_string(&embedding)
         .map_err(|e| AppError::Internal(format!("Failed to serialize embedding: {}", e)))?;
+    let search_content = preprocess_for_fts(&input.content);
 
     conn.execute(
         r#"
         INSERT INTO memories (
-            id, content, embedding, type, tags, metadata,
+            id, content, search_content, embedding, type, tags, metadata,
             importance, access_count, retrieval_count, created_at, updated_at
-        ) VALUES (?, ?, vector32(?), ?, ?, ?, ?, 0, 0, ?, ?)
+        ) VALUES (?, ?, ?, vector32(?), ?, ?, ?, ?, 0, 0, ?, ?)
         "#,
         params![
             id.clone(),
             input.content.clone(),
+            search_content,
             embedding_json,
             memory_type.as_str(),
             tags.clone(),
@@ -104,16 +107,17 @@ pub async fn update_memory(
                 None
             };
 
+        let search_content = preprocess_for_fts(&content);
         if let Some(emb_json) = embedding_json {
             conn.execute(
-                "UPDATE memories SET content = ?, embedding = vector32(?), updated_at = ? WHERE id = ?",
-                params![content.clone(), emb_json, now, id],
+                "UPDATE memories SET content = ?, search_content = ?, embedding = vector32(?), updated_at = ? WHERE id = ?",
+                params![content.clone(), search_content, emb_json, now, id],
             )
             .await?;
         } else {
             conn.execute(
-                "UPDATE memories SET content = ?, updated_at = ? WHERE id = ?",
-                params![content.clone(), now, id],
+                "UPDATE memories SET content = ?, search_content = ?, updated_at = ? WHERE id = ?",
+                params![content.clone(), search_content, now, id],
             )
             .await?;
         }
@@ -305,7 +309,9 @@ mod tests {
         .await
         .unwrap();
 
-        let tracked_at = track_retrievals(&conn, &[memory.id.clone()]).await.unwrap();
+        let tracked_at = track_retrievals(&conn, std::slice::from_ref(&memory.id))
+            .await
+            .unwrap();
         let loaded = get_memory(&conn, &memory.id).await.unwrap();
 
         assert_eq!(loaded.retrieval_count, 1);
