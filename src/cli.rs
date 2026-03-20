@@ -35,6 +35,8 @@ enum Commands {
     Setup(SetupArgs),
     /// Check config and embedding connectivity
     Doctor,
+    /// Show the MemX version
+    Version,
     /// Manage the background MemX service
     Service(ServiceArgs),
     /// Remove the installed binary and local MemX data
@@ -169,6 +171,7 @@ pub async fn run() -> Result<()> {
     match cli.command {
         Commands::Setup(args) => cmd_setup(args).await,
         Commands::Doctor => cmd_doctor().await,
+        Commands::Version => cmd_version(),
         Commands::Service(args) => cmd_service(args),
         Commands::Uninstall(args) => cmd_uninstall(args),
         Commands::Serve => cmd_serve().await,
@@ -181,6 +184,11 @@ pub async fn run() -> Result<()> {
         Commands::Search { query, limit } => cmd_search(query, limit).await,
         Commands::List { limit, offset } => cmd_list(limit, offset).await,
     }
+}
+
+fn cmd_version() -> Result<()> {
+    println!("{}", version_string());
+    Ok(())
 }
 
 async fn init_service(config: &Config) -> Result<MemxService> {
@@ -932,6 +940,10 @@ fn format_timestamp(ts: i64) -> String {
         .unwrap_or_else(|| ts.to_string())
 }
 
+fn version_string() -> String {
+    format!("memx {}", env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum BinaryUninstallStatus {
     #[cfg(not(windows))]
@@ -1035,7 +1047,9 @@ fn schedule_windows_binary_removal(binary_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{binary_backup_path, is_managed_binary_path, looks_like_cargo_target_binary};
+    use super::{
+        binary_backup_path, is_managed_binary_path, looks_like_cargo_target_binary, version_string,
+    };
     use std::path::Path;
 
     #[test]
@@ -1058,6 +1072,14 @@ mod tests {
         assert_eq!(
             binary_backup_path(path),
             Path::new("/Users/demo/.local/bin/memx.bak")
+        );
+    }
+
+    #[test]
+    fn version_string_matches_package_version() {
+        assert_eq!(
+            version_string(),
+            format!("memx {}", env!("CARGO_PKG_VERSION"))
         );
     }
 }

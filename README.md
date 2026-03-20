@@ -177,6 +177,7 @@ memx <COMMAND>
 Commands:
   setup   Interactively create or update the config
   doctor  Check config and embedding connectivity
+  version  Show the MemX version
   service  Manage the background MemX service
   uninstall  Remove the installed binary and local MemX data
   serve   Start the HTTP server
@@ -207,6 +208,12 @@ Options:
 
 ```bash
 memx doctor
+```
+
+### `memx version`
+
+```bash
+memx version
 ```
 
 ### `memx service`
