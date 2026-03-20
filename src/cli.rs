@@ -18,6 +18,7 @@ use crate::{
     os_service,
     routes::{link_routes, memory_routes, search_routes},
     service::{AppState, MemxService},
+    updater::{self, UpdateOutcome},
 };
 
 const SETUP_PROBE_TEXT: &str = "memx setup verification";
@@ -37,6 +38,8 @@ enum Commands {
     Doctor,
     /// Show the MemX version
     Version,
+    /// Update MemX to the latest published release
+    Update,
     /// Manage the background MemX service
     Service(ServiceArgs),
     /// Remove the installed binary and local MemX data
@@ -172,6 +175,7 @@ pub async fn run() -> Result<()> {
         Commands::Setup(args) => cmd_setup(args).await,
         Commands::Doctor => cmd_doctor().await,
         Commands::Version => cmd_version(),
+        Commands::Update => cmd_update().await,
         Commands::Service(args) => cmd_service(args),
         Commands::Uninstall(args) => cmd_uninstall(args),
         Commands::Serve => cmd_serve().await,
@@ -188,6 +192,41 @@ pub async fn run() -> Result<()> {
 
 fn cmd_version() -> Result<()> {
     println!("{}", version_string());
+    Ok(())
+}
+
+async fn cmd_update() -> Result<()> {
+    let binary_path = env::current_exe().context("Cannot determine current executable path")?;
+    ensure_installed_binary_path(&binary_path)?;
+
+    let current_version = updater::current_version()?;
+    match updater::update_current_binary(&binary_path, &current_version).await? {
+        UpdateOutcome::UpToDate { current } => {
+            println!("memx {current} is already up to date.");
+        }
+        UpdateOutcome::Updated {
+            previous,
+            latest,
+            restarted_service,
+        } => {
+            println!("Updated MemX from {previous} to {latest}.");
+            if restarted_service {
+                println!("Background service restarted.");
+            }
+        }
+        UpdateOutcome::Scheduled {
+            previous,
+            latest,
+            restarted_service,
+        } => {
+            println!("Scheduled MemX update from {previous} to {latest}.");
+            if restarted_service {
+                println!("Background service will be started again after the update finishes.");
+            }
+            println!("Re-run `memx version` after this command exits to confirm the new version.");
+        }
+    }
+
     Ok(())
 }
 
@@ -339,7 +378,7 @@ fn cmd_service(args: ServiceArgs) -> Result<()> {
 
     match args.command {
         ServiceCommand::Install => {
-            ensure_service_binary_path(&binary_path)?;
+            ensure_installed_binary_path(&binary_path)?;
             os_service::install(&binary_path, &memx_home)?;
             println!(
                 "MemX background service installed and started with {}.",
@@ -998,10 +1037,10 @@ fn is_managed_binary_path(path: &Path) -> bool {
     ) && !looks_like_cargo_target_binary(path)
 }
 
-fn ensure_service_binary_path(binary_path: &Path) -> Result<()> {
+fn ensure_installed_binary_path(binary_path: &Path) -> Result<()> {
     if looks_like_cargo_target_binary(binary_path) {
         bail!(
-            "Refusing to install a background service from {}.\nInstall MemX first, then re-run `memx service install` from the installed binary.",
+            "Refusing to manage an installed binary from {}.\nInstall MemX first, then re-run this command from the installed binary.",
             binary_path.display()
         );
     }

@@ -26,6 +26,7 @@ mimalloc = { version = "0.1", default-features = false }
 # CLI
 clap = { version = "4", features = ["derive"] }
 rpassword = "7"
+semver = "1"
 
 # Configuration
 dotenvy = "0.15"
@@ -45,6 +46,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Time
 chrono = "0.4"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.dev]
 incremental = true

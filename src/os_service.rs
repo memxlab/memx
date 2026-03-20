@@ -28,6 +28,28 @@ pub fn install(binary_path: &Path, memx_home: &Path) -> Result<()> {
     }
 }
 
+pub fn is_installed() -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(macos_plist_path()?.exists())
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Ok(linux_unit_path()?.exists())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Ok(windows_task_exists())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Ok(false)
+    }
+}
+
 pub fn start() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -409,6 +431,15 @@ fn windows_task_command(binary_path: &Path, memx_home: &Path) -> String {
         memx_home.display(),
         binary_path.display()
     )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_task_exists() -> bool {
+    Command::new("schtasks")
+        .args(["/Query", "/TN", windows_task_name()])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn run_command<const N: usize>(program: &str, args: [&str; N]) -> Result<String> {

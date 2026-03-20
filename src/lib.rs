@@ -6,3 +6,4 @@ pub mod error;
 pub mod os_service;
 pub mod routes;
 pub mod service;
+pub mod updater;
