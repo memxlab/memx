@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+#[cfg(not(windows))]
 use flate2::read::GzDecoder;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use semver::Version;
@@ -8,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+#[cfg(not(windows))]
 use tar::Archive;
 use uuid::Uuid;
 use zip::ZipArchive;
@@ -97,6 +99,7 @@ pub async fn update_current_binary(
     }
 
     Ok(match outcome {
+        #[cfg(not(windows))]
         ReplaceOutcome::Replaced => {
             if restart_service {
                 os_service::start()
@@ -199,6 +202,10 @@ fn extract_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
     if archive_path.extension().and_then(|value| value.to_str()) == Some("zip") {
         extract_zip(archive_path, extract_dir)?;
     } else {
+        #[cfg(windows)]
+        bail!("Unexpected non-zip update archive on Windows");
+
+        #[cfg(not(windows))]
         extract_tar_gz(archive_path, extract_dir)?;
     }
 
@@ -210,6 +217,7 @@ fn extract_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
     })
 }
 
+#[cfg(not(windows))]
 fn extract_tar_gz(archive_path: &Path, extract_dir: &Path) -> Result<()> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("Failed to open {}", archive_path.display()))?;

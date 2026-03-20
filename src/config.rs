@@ -381,6 +381,9 @@ fn set_config_permissions(path: &std::path::Path) -> Result<()> {
             .with_context(|| format!("Cannot set permissions on {}", path.display()))?;
     }
 
+    #[cfg(not(unix))]
+    let _ = path;
+
     Ok(())
 }
 
