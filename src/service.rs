@@ -64,8 +64,8 @@ impl MemxService {
 
     // NOTE: This method holds the DB mutex across both the search query and the
     // retrieval tracking update. Since DbPool wraps a single Arc<Mutex<Connection>>,
-    // concurrent requests (REST + MCP) will serialize here. Acceptable for the
-    // current single-user local deployment; revisit if connection pooling is added.
+    // concurrent requests will serialize here. Acceptable for the current
+    // single-user local deployment; revisit if connection pooling is added.
     pub(crate) async fn search_memories_with_embedding(
         &self,
         query: &str,

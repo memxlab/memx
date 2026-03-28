@@ -157,7 +157,7 @@ memx list --limit 10
 
 All CLI commands share the same database as the server — no server process needed.
 
-### 5. Try it — REST API
+### 6. Try it — REST API
 
 ```bash
 # Store a memory
@@ -282,14 +282,6 @@ Options:
 | `DELETE` | `/memories/links/:link_id` | Delete a link                  |
 
 Full API reference: [README.md](README.md)
-
-## MCP Tools
-
-| Tool            | Description                  |
-| --------------- | ---------------------------- |
-| `memory_add`    | Store a new memory           |
-| `memory_search` | Search related memories      |
-| `memory_list`   | List recent memories         |
 
 ---
 
