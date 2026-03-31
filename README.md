@@ -33,6 +33,7 @@ AI:    [searches MemX] → "I don't have that information stored."  ← won't ha
 ## Features
 
 - **Unified binary** — `memx setup/doctor/serve` cover bootstrap, validation, and service mode; `memx add/search/list` operate the DB directly from the CLI
+- **MCP ready** — `memx mcp` exposes MemX as a local Model Context Protocol server over stdio
 - **Local-first** — all data stored in a single libSQL file on your machine, forever yours
 - **Single-file portability** — moving to a new computer is just copying one file
 - **Native vector search** — libSQL built-in vector functions + DiskANN index
@@ -182,6 +183,7 @@ Commands:
   service  Manage the background MemX service
   uninstall  Remove the installed binary and local MemX data
   serve   Start the HTTP server
+  mcp     Start the MCP stdio server
   add     Add a new memory
   search  Search memories
   list    List recent memories
@@ -228,6 +230,48 @@ memx update
 ```bash
 memx service <install|start|stop|status|remove>
 ```
+
+### `memx mcp`
+
+```bash
+memx mcp
+```
+
+Starts a local MCP server over stdio so tools like Codex can read and write MemX memories through MCP tool calls.
+
+#### Codex MCP config example
+
+Project-local config (`.codex/config.toml`) for development:
+
+```toml
+[mcp_servers.memx]
+command = "cargo"
+args = ["run", "--", "mcp"]
+cwd = "/absolute/path/to/memx-app"
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+User-level config (`~/.codex/config.toml`) after installing the `memx` binary:
+
+```toml
+[mcp_servers.memx]
+command = "memx"
+args = ["mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+After saving the config, restart Codex. The MCP server name will appear as `memx`, and Codex will be able to call these tools:
+
+- `add-memory`
+- `search-memories`
+- `get-memory`
+- `update-memory`
+- `delete-memory`
+- `list-memories`
 
 ### `memx uninstall`
 

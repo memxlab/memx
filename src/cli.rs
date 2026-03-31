@@ -15,7 +15,7 @@ use crate::{
     },
     db::{init_schema, DbPool, MemoryInput, MemoryType},
     embed::EmbedClient,
-    os_service,
+    mcp, os_service,
     routes::{link_routes, memory_routes, search_routes},
     service::{AppState, MemxService},
     updater::{self, UpdateOutcome},
@@ -46,6 +46,8 @@ enum Commands {
     Uninstall(UninstallArgs),
     /// Start the HTTP server
     Serve,
+    /// Start the MCP stdio server
+    Mcp,
     /// Add a new memory
     Add {
         /// Memory content
@@ -179,6 +181,7 @@ pub async fn run() -> Result<()> {
         Commands::Service(args) => cmd_service(args),
         Commands::Uninstall(args) => cmd_uninstall(args),
         Commands::Serve => cmd_serve().await,
+        Commands::Mcp => cmd_mcp().await,
         Commands::Add {
             content,
             r#type,
@@ -542,6 +545,12 @@ async fn cmd_serve() -> Result<()> {
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn cmd_mcp() -> Result<()> {
+    let config = Config::load()?;
+    let service = init_service(&config).await?;
+    mcp::serve_stdio(service).await
 }
 
 async fn cmd_add(

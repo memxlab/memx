@@ -1,6 +1,8 @@
+use rmcp::schemars;
+use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Memory {
     pub id: String,
     pub content: String,
@@ -21,7 +23,7 @@ pub struct Memory {
     pub final_score: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryType {
     Episodic,

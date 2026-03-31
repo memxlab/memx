@@ -1,7 +1,9 @@
 use crate::{
     db::{
-        create_memory, enhanced_search, list_memories as db_list_memories, track_retrievals,
-        update_memory as db_update_memory, DbPool, Memory, MemoryInput, SearchOptions,
+        create_memory, delete_memory as db_delete_memory, enhanced_search,
+        get_memory as db_get_memory, list_memories as db_list_memories, track_access,
+        track_retrievals, update_memory as db_update_memory, DbPool, Memory, MemoryInput,
+        SearchOptions,
     },
     embed::EmbedClient,
     error::Result,
@@ -101,15 +103,43 @@ impl MemxService {
     }
 
     pub async fn update_memory(&self, id: &str, input: MemoryInput) -> Result<Memory> {
+        self.update_memory_with_embedding(id, input, None).await
+    }
+
+    pub(crate) async fn update_memory_with_embedding(
+        &self,
+        id: &str,
+        input: MemoryInput,
+        embedding_override: Option<Vec<f32>>,
+    ) -> Result<Memory> {
         let (content, embedding) = if input.content.is_empty() {
             (None, None)
         } else {
-            let emb = self.embed_client.embed(&input.content).await?;
+            let emb = if let Some(embedding) = embedding_override {
+                embedding
+            } else {
+                self.embed_client.embed(&input.content).await?
+            };
             (Some(input.content), Some(emb))
         };
 
         let conn = self.db.get().await;
         db_update_memory(&conn, id, content, embedding, input.importance).await
+    }
+
+    pub async fn get_memory(&self, id: &str) -> Result<Memory> {
+        let conn = self.db.get().await;
+
+        if let Err(err) = track_access(&conn, id).await {
+            tracing::warn!("Failed to track access stats: {}", err);
+        }
+
+        db_get_memory(&conn, id).await
+    }
+
+    pub async fn delete_memory(&self, id: &str) -> Result<()> {
+        let conn = self.db.get().await;
+        db_delete_memory(&conn, id).await
     }
 
     pub async fn list_memories(
